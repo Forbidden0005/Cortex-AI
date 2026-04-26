@@ -1,0 +1,43 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Distribution / packaging
+*.egg-info/
+dist/
+build/
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Logs
+logs/
+*.log
+*.jsonl
+
+# Model files (large binaries)
+models/*.gguf
+models/*.bin
+models/*.safetensors
+
+# Memory / vector DB (runtime data)
+memory/
+test_memory/
+
+# Config secrets
+config/api_keys.yaml
+
+# IDE
+.vscode/
+.idea/
+*.swp

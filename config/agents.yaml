@@ -1,0 +1,33 @@
+agents:
+- name: planning_agent
+  type: planning
+  enabled: true
+  max_retries: 3
+  timeout: 300
+  tools:
+  - llm
+  permissions:
+    can_plan: true
+- name: file_agent
+  type: file
+  enabled: true
+  max_retries: 3
+  timeout: 300
+  tools:
+  - file_tools
+  - terminal
+  permissions:
+    can_read: true
+    can_write: true
+    can_delete: false
+- name: coding_agent
+  type: coding
+  enabled: true
+  max_retries: 3
+  timeout: 600
+  tools:
+  - code_executor
+  - file_tools
+  permissions:
+    can_execute: true
+    can_install: false

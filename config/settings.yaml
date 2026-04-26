@@ -1,0 +1,27 @@
+system_name: AI System
+version: 1.0.0
+debug_mode: false
+logging:
+  log_level: info
+  log_dir: ./logs
+  log_file: ai_system.log
+  max_file_size: 10485760
+  backup_count: 5
+  log_to_console: true
+  log_to_file: true
+memory:
+  vector_db_path: ./memory/vector_db
+  embedding_model: all-MiniLM-L6-v2
+  collection_name: ai_memory
+  short_term_days: 7
+  long_term_threshold: 0.7
+  max_memories: 10000
+  cleanup_interval: 86400
+  max_search_results: 10
+  similarity_threshold: 0.6
+task_queue:
+  max_concurrent_tasks: 5
+  task_timeout: 600
+  retry_delay: 5
+  max_queue_size: 1000
+  priority_enabled: true

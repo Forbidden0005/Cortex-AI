@@ -1,0 +1,4 @@
+api_keys:
+  openai: your-openai-key-here
+  anthropic: your-anthropic-key-here
+  huggingface: your-huggingface-key-here
