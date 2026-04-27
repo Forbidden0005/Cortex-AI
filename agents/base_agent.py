@@ -239,15 +239,15 @@ class BaseAgent(ABC):
             self._tools_used.append(tool_name)
 
     def _log(self, message: str, level: str = "info"):
-        """
-        Log a message at the given level, prefixed with the agent name.
-
-        Args:
-            message: Message text.
-            level: One of "debug", "info", "warning", "error". Defaults to "info".
-        """
-        log_fn = getattr(self.logger, level, self.logger.info)
-        log_fn(f"[{self.name}] {message}")
+        """Log a message"""
+        if level == "debug":
+            self.logger.debug(f"[{self.name}] {message}")
+        elif level == "info":
+            self.logger.info(f"[{self.name}] {message}")
+        elif level == "warning":
+            self.logger.warning(f"[{self.name}] {message}")
+        elif level == "error":
+            self.logger.error(f"[{self.name}] {message}")
 
     def get_stats(self) -> Dict[str, Any]:
         """Get agent performance statistics"""
@@ -303,17 +303,17 @@ if __name__ == "__main__":
     result = agent.execute(task)
 
     # Check result
-    print(f"[OK] Task Status: {result.status.value}")
-    print(f"[OK] Agent Name: {result.agent_name}")
-    print(f"[OK] Success: {result.is_successful()}")
-    print(f"[OK] Data: {result.data}")
-    print(f"[OK] Execution Time: {result.execution_time:.4f}s")
-    print(f"[OK] Tools Used: {result.tools_used}")
+    print(f"✅ Task Status: {result.status.value}")
+    print(f"✅ Agent Name: {result.agent_name}")
+    print(f"✅ Success: {result.is_successful()}")
+    print(f"✅ Data: {result.data}")
+    print(f"✅ Execution Time: {result.execution_time:.4f}s")
+    print(f"✅ Tools Used: {result.tools_used}")
 
     # Check stats
     stats = agent.get_stats()
-    print("\nAgent Stats:")
+    print("\n📊 Agent Stats:")
     print(f"   Tasks Completed: {stats['tasks_completed']}")
     print(f"   Success Rate: {stats['success_rate']:.1%}")
 
-    print("\n[PASS] BaseAgent test passed!")
+    print("\n✅ BaseAgent test passed!")

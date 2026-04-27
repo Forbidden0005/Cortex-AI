@@ -105,24 +105,6 @@ class TaskQueue:
                 f"after {retry_count + 1} attempt(s). Error: {error}"
             )
 
-    def mark_abandoned(self, task: Task, error: str = "") -> None:
-        """
-        Permanently discard a task without re-queuing, regardless of retries.
-
-        Used by LoopController when the eval harness decides to ABORT —
-        the task is moved straight to the failed list so the retry counter
-        is never consulted.
-        """
-        if task.task_id in self._active_set:
-            self._active.remove(task)
-            self._active_set.discard(task.task_id)
-        # Also remove from pending in case it was already re-queued
-        self._pending = [t for t in self._pending if t.task_id != task.task_id]
-        self._failed.append(task)
-        self.logger.warning(
-            f"[TaskQueue] Task {task.task_id} abandoned (no retry). Error: {error}"
-        )
-
     def is_empty(self) -> bool:
         """Return True when there are no more pending tasks."""
         return len(self._pending) == 0

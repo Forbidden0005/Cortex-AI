@@ -9,18 +9,14 @@ Memory types: short-term, long-term, conversation, knowledge, project, file, age
 """
 
 import json
-import logging
 # Import models
 import sys
-from abc import ABC, abstractmethod
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 sys.path.append(str(Path(__file__).parent.parent))
 from models import MemoryImportance, MemoryItem, MemoryType
-
-_logger = logging.getLogger("Cortex")
 
 # Try to import ChromaDB
 try:
@@ -31,37 +27,27 @@ except ImportError:
     CHROMADB_AVAILABLE = False
 
 
-class MemoryBackend(ABC):
-    """Abstract base class for memory backends.
+class MemoryBackend:
+    """Base class for memory backends"""
 
-    Subclasses must implement all five methods. Using ABC ensures a
-    missing implementation raises TypeError at class definition time
-    rather than silently failing at runtime.
-    """
-
-    @abstractmethod
     def save_memory(self, memory: MemoryItem) -> bool:
-        """Persist a memory item. Returns True on success."""
+        raise NotImplementedError
 
-    @abstractmethod
     def get_memory(self, memory_id: str) -> Optional[MemoryItem]:
-        """Retrieve a single memory by ID. Returns None if not found."""
+        raise NotImplementedError
 
-    @abstractmethod
     def search_memories(
         self, query: str, limit: int = 10, memory_type: Optional[MemoryType] = None
     ) -> List[MemoryItem]:
-        """Search memories by text query, optionally filtered by type."""
+        raise NotImplementedError
 
-    @abstractmethod
     def delete_memory(self, memory_id: str) -> bool:
-        """Delete a memory by ID. Returns True on success."""
+        raise NotImplementedError
 
-    @abstractmethod
     def get_all_memories(
         self, memory_type: Optional[MemoryType] = None
     ) -> List[MemoryItem]:
-        """Return all memories, optionally filtered by type."""
+        raise NotImplementedError
 
 
 class FileBasedBackend(MemoryBackend):
@@ -109,8 +95,8 @@ class FileBasedBackend(MemoryBackend):
             self._save_index()
 
             return True
-        except (OSError, ValueError) as e:
-            _logger.error(f"[FileBasedBackend] Failed to save memory {memory.memory_id}: {e}")
+        except Exception as e:
+            print(f"Error saving memory: {e}")
             return False
 
     def get_memory(self, memory_id: str) -> Optional[MemoryItem]:
@@ -123,8 +109,8 @@ class FileBasedBackend(MemoryBackend):
             with open(filepath, "r") as f:
                 data = json.load(f)
             return MemoryItem.from_dict(data)
-        except (OSError, ValueError, KeyError) as e:
-            _logger.error(f"[FileBasedBackend] Failed to load memory {memory_id}: {e}")
+        except Exception as e:
+            print(f"Error loading memory: {e}")
             return None
 
     def search_memories(
@@ -168,8 +154,8 @@ class FileBasedBackend(MemoryBackend):
             del self.index[memory_id]
             self._save_index()
             return True
-        except (OSError, KeyError) as e:
-            _logger.error(f"[FileBasedBackend] Failed to delete memory {memory_id}: {e}")
+        except Exception as e:
+            print(f"Error deleting memory: {e}")
             return False
 
     def get_all_memories(
@@ -219,7 +205,7 @@ class ChromaDBBackend(MemoryBackend):
             )
             return True
         except Exception as e:
-            _logger.error(f"[ChromaDBBackend] Failed to save memory {memory.memory_id}: {e}")
+            print(f"Error saving to ChromaDB: {e}")
             return False
 
     def get_memory(self, memory_id: str) -> Optional[MemoryItem]:
@@ -243,7 +229,7 @@ class ChromaDBBackend(MemoryBackend):
                 source=results["metadatas"][0]["source"],
             )
         except Exception as e:
-            _logger.error(f"[ChromaDBBackend] Failed to get memory {memory_id}: {e}")
+            print(f"Error getting memory: {e}")
             return None
 
     def search_memories(
@@ -275,7 +261,7 @@ class ChromaDBBackend(MemoryBackend):
 
             return memories
         except Exception as e:
-            _logger.error(f"[ChromaDBBackend] Failed to search memories for '{query}': {e}")
+            print(f"Error searching memories: {e}")
             return []
 
     def delete_memory(self, memory_id: str) -> bool:
@@ -284,7 +270,7 @@ class ChromaDBBackend(MemoryBackend):
             self.collection.delete(ids=[memory_id])
             return True
         except Exception as e:
-            _logger.error(f"[ChromaDBBackend] Failed to delete memory {memory_id}: {e}")
+            print(f"Error deleting memory: {e}")
             return False
 
     def get_all_memories(
@@ -307,7 +293,7 @@ class ChromaDBBackend(MemoryBackend):
 
             return memories
         except Exception as e:
-            _logger.error(f"[ChromaDBBackend] Failed to retrieve all memories: {e}")
+            print(f"Error getting all memories: {e}")
             return []
 
 

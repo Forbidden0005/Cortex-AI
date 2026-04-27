@@ -1,21 +1,10 @@
-system_name: Cortex
+system_name: AI System
 version: 1.0.0
 debug_mode: false
-
-# Model performance — tune these for your hardware.
-# If you have an NVIDIA GPU with CUDA: set use_gpu: true, gpu_layers: 20-35
-# CPU-only machine: keep use_gpu: false, gpu_layers: 0
-# Reduce threads if Cortex is using too much CPU (e.g. threads: 2)
-model:
-  max_tokens: 512
-  use_gpu: false   # set true only if you have an NVIDIA GPU with CUDA installed
-  gpu_layers: 0    # set to 20-35 only with a CUDA GPU
-  threads: 2       # CPU threads per inference — raise to 4 for speed, lower for less CPU
-  batch_size: 128  # tokens per CPU burst — lower = smoother load
 logging:
   log_level: info
   log_dir: ./logs
-  log_file: cortex.log
+  log_file: ai_system.log
   max_file_size: 10485760
   backup_count: 5
   log_to_console: true

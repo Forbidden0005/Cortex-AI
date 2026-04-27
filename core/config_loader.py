@@ -118,13 +118,13 @@ class ConfigLoader:
             model_path=data.get("model_path"),
             api_key=data.get("api_key"),
             temperature=data.get("temperature", 0.7),
-            max_tokens=data.get("max_tokens", 512),
+            max_tokens=data.get("max_tokens", 2048),
             top_p=data.get("top_p", 0.9),
             context_window=data.get("context_window", 4096),
-            use_gpu=data.get("use_gpu", False),
-            gpu_layers=data.get("gpu_layers", 0),
-            threads=data.get("threads", 2),
-            batch_size=data.get("batch_size", 128),
+            use_gpu=data.get("use_gpu", True),
+            gpu_layers=data.get("gpu_layers", 32),
+            threads=data.get("threads", 4),
+            batch_size=data.get("batch_size", 512),
         )
 
     def load_memory_config(self) -> MemoryConfig:
@@ -154,7 +154,7 @@ class ConfigLoader:
                 LogLevel, log_data.get("log_level", "info"), LogLevel.INFO
             ),
             log_dir=log_data.get("log_dir", "./logs"),
-            log_file=log_data.get("log_file", "cortex.log"),
+            log_file=log_data.get("log_file", "ai_system.log"),
             max_file_size=log_data.get("max_file_size", 10485760),
             backup_count=log_data.get("backup_count", 5),
             log_to_console=log_data.get("log_to_console", True),
@@ -231,7 +231,7 @@ class ConfigLoader:
 
         # Create system config
         config = SystemConfig(
-            system_name=settings_data.get("system_name", "Cortex"),
+            system_name=settings_data.get("system_name", "AI System"),
             version=settings_data.get("version", "1.0.0"),
             debug_mode=settings_data.get("debug_mode", False),
             model=self.load_model_config(),
@@ -259,13 +259,13 @@ class ConfigLoader:
         # Default settings.yaml
         if not self.settings_path.exists():
             default_settings = {
-                "system_name": "Cortex",
+                "system_name": "AI System",
                 "version": "1.0.0",
                 "debug_mode": False,
                 "logging": {
                     "log_level": "info",
                     "log_dir": "./logs",
-                    "log_file": "cortex.log",
+                    "log_file": "ai_system.log",
                     "max_file_size": 10485760,
                     "backup_count": 5,
                     "log_to_console": True,
@@ -300,13 +300,13 @@ class ConfigLoader:
                 "model_name": "mistral-7b",
                 "model_path": "./models/mistral-7b-instruct-v0.1.Q4_K_M.gguf",
                 "temperature": 0.7,
-                "max_tokens": 512,
+                "max_tokens": 2048,
                 "top_p": 0.9,
                 "context_window": 4096,
-                "use_gpu": False,
-                "gpu_layers": 0,
-                "threads": 2,
-                "batch_size": 128,
+                "use_gpu": True,
+                "gpu_layers": 32,
+                "threads": 4,
+                "batch_size": 512,
             }
             self._save_yaml(self.models_path, default_models)
             print("Created default models.yaml")
