@@ -120,39 +120,42 @@ Format your response as a numbered list of steps."""
         Returns:
             List of Task objects
         """
+        import re
+
         subtasks = []
         lines = plan_text.strip().split("\n")
 
-        # Simple parsing - look for numbered steps
+        # Accept multiple list formats:
+        #   "1. Step"  "1) Step"  "- Step"  "* Step"  "• Step"
+        _step_re = re.compile(
+            r"^(?:\d+[.)]\s*|[-*•]\s*)(.*)", re.UNICODE
+        )
+
         for line in lines:
             line = line.strip()
-
-            # Skip empty lines
             if not line:
                 continue
 
-            # Look for numbered items (1., 2., etc.)
-            if line[0].isdigit() and ("." in line or ")" in line):
-                # Extract step description
-                # Remove the number prefix
-                description = line.split(".", 1)[-1].split(")", 1)[-1].strip()
+            m = _step_re.match(line)
+            if not m:
+                # Only accept explicit list markers — ignore prose, headers, fences
+                continue
 
-                if description:
-                    # Determine agent type based on keywords
-                    agent_type = self._determine_agent_type(description)
+            description = m.group(1).strip()
+            if not description:
+                continue
 
-                    # Create subtask
-                    subtask = Task(
-                        description=description,
-                        task_type=agent_type,
-                        parent_task_id=parent_task.task_id,
-                        priority=parent_task.priority,
-                        parameters={},
-                        save_to_memory=True,
-                        memory_tags=["planned_subtask", agent_type],
-                    )
-
-                    subtasks.append(subtask)
+            agent_type = self._determine_agent_type(description)
+            subtask = Task(
+                description=description,
+                task_type=agent_type,
+                parent_task_id=parent_task.task_id,
+                priority=parent_task.priority,
+                parameters={},
+                save_to_memory=True,
+                memory_tags=["planned_subtask", agent_type],
+            )
+            subtasks.append(subtask)
 
         # If no subtasks parsed, create a fallback
         if not subtasks:

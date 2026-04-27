@@ -90,7 +90,12 @@ class ConfigLoader:
                 data = yaml.safe_load(f)
                 return data if data is not None else {}
             except yaml.YAMLError as e:
-                print(f"Error loading {filepath}: {e}")
+                # Log a clear warning and fall back to defaults rather than
+                # crashing the whole application on a malformed config file.
+                print(
+                    f"[ConfigLoader] WARNING: Could not parse {filepath.name}: {e}. "
+                    f"Using defaults."
+                )
                 return {}
 
     def _save_yaml(self, filepath: Path, data: Dict[str, Any]):
@@ -392,6 +397,21 @@ class ConfigLoader:
             }
             self._save_yaml(self.api_keys_path, default_api_keys)
             print("Created default api_keys.yaml (remember to add to .gitignore!)")
+            # Auto-add to .gitignore so placeholder keys are never committed
+            gitignore = self.api_keys_path.parent.parent / ".gitignore"
+            entry = "config/api_keys.yaml\n"
+            try:
+                # Read existing content to avoid duplicates, then append if needed.
+                # Open in 'a+' (append + read) so we never truncate an existing file
+                # and only one write syscall is needed — minimises race-condition window.
+                with open(gitignore, "a+") as gf:
+                    gf.seek(0)
+                    existing_lines = gf.read().splitlines()
+                    if "config/api_keys.yaml" not in existing_lines:
+                        gf.write(entry)
+                        print(f"Added config/api_keys.yaml to .gitignore")
+            except OSError as e:
+                print(f"Warning: could not update .gitignore: {e}")
 
 
 # Global config instance

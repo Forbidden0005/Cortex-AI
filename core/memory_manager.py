@@ -387,10 +387,9 @@ class MemoryManager:
         """
         memory = self.backend.get_memory(memory_id)
         if memory:
-            prev_count = memory.access_count
+            # access() always increments access_count; persist the updated state
             memory.access()
-            if memory.access_count != prev_count:  # only persist if changed
-                self.backend.save_memory(memory)
+            self.backend.save_memory(memory)
         return memory
 
     def search(

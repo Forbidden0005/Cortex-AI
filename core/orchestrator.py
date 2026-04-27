@@ -10,7 +10,9 @@ The orchestrator is the "brain" that:
 - Handles complex multi-step workflows
 """
 
+import concurrent.futures
 import sys
+import threading
 import uuid
 from datetime import datetime
 from pathlib import Path
@@ -26,6 +28,18 @@ from core.logger import get_logger
 from core.memory_manager import MemoryManager
 from core.task_queue import TaskQueue
 from models import AgentResult, MemoryItem, MemoryType, Task, TaskPriority
+
+
+class _WorkflowCancelled(BaseException):
+    """
+    Sentinel raised by ``_check_cancelled()`` inside a workflow thread.
+
+    Inheriting from BaseException (not Exception) prevents it from being
+    accidentally swallowed by broad ``except Exception`` handlers.  The outer
+    ThreadPoolExecutor catches it via Future.result() only when the thread
+    exits cleanly before the futures timeout — in practice it is always raised
+    after cancel_event is set, so the future result is never inspected again.
+    """
 
 
 class Orchestrator:
@@ -58,6 +72,7 @@ class Orchestrator:
         self.task_queue = TaskQueue(
             max_concurrent_tasks=self.config.task_queue.max_concurrent_tasks,
             retry_delay=self.config.task_queue.retry_delay,
+            max_queue_size=self.config.task_queue.max_queue_size,
         )
 
         # Conversation tracking
@@ -86,6 +101,8 @@ class Orchestrator:
             Dictionary with results and status
         """
         workflow_id = str(uuid.uuid4())
+        # Use the task-level timeout from config (defined in TaskQueueConfig / settings.yaml)
+        workflow_timeout = self.config.task_queue.task_timeout
 
         self.logger.log_user_request(user_request)
         self.logger.info(f"[Orchestrator] Processing request (workflow: {workflow_id})")
@@ -99,31 +116,53 @@ class Orchestrator:
             "results": [],
         }
 
-        try:
+        # Cancellation token — the workflow body checks this at each step boundary
+        # so it stops cooperatively rather than leaking resources on timeout.
+        cancel_event = threading.Event()
+
+        def _workflow_body():
+            """
+            Inner workflow — runs in a thread so we get a cross-platform timeout.
+            Checks ``cancel_event`` between every major step; on timeout the caller
+            sets the event and the thread exits cleanly at the next boundary.
+            """
+            def _check_cancelled():
+                if cancel_event.is_set():
+                    # Use the sentinel, not the built-in TimeoutError, so it is
+                    # never confused with concurrent.futures.TimeoutError or
+                    # caught by a generic ``except Exception`` handler.
+                    raise _WorkflowCancelled(
+                        f"Workflow {workflow_id} cancelled after timeout"
+                    )
+
             # Step 1: Understand the request and create initial task
+            _check_cancelled()
             initial_task = self._create_task_from_request(user_request, context)
 
             # Step 2: Determine if task needs planning
+            _check_cancelled()
             if self._needs_planning(initial_task):
-                # Break down into subtasks
                 subtasks = self._plan_execution(initial_task)
                 tasks_to_execute = subtasks
             else:
-                # Single task, execute directly
                 tasks_to_execute = [initial_task]
 
             # Step 3: Add tasks to queue
+            _check_cancelled()
             for task in tasks_to_execute:
                 self.task_queue.add_task(task)
                 self.active_workflows[workflow_id]["tasks"].append(task.task_id)
 
             # Step 4: Execute tasks from queue
+            _check_cancelled()
             results = self._execute_queued_tasks()
 
             # Step 5: Combine results
+            _check_cancelled()
             final_result = self._combine_results(results)
 
             # Step 6: Store in memory
+            _check_cancelled()
             self._store_workflow_memory(workflow_id, user_request, final_result)
 
             # Step 7: Update workflow tracking
@@ -147,18 +186,36 @@ class Orchestrator:
                 "message": "Request processed successfully",
             }
 
-        except Exception as e:
-            self.logger.error(f"Workflow {workflow_id} failed: {str(e)}")
+        # ThreadPoolExecutor.result(timeout=…) works on Windows and POSIX alike.
+        # On timeout we set cancel_event so the thread exits at the next step check.
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+            future = executor.submit(_workflow_body)
+            try:
+                return future.result(timeout=workflow_timeout)
 
-            self.active_workflows[workflow_id]["status"] = "failed"
-            self.active_workflows[workflow_id]["error"] = str(e)
+            except concurrent.futures.TimeoutError:
+                cancel_event.set()  # Signal the workflow thread to stop
+                msg = f"Workflow {workflow_id} exceeded timeout of {workflow_timeout}s"
+                self.logger.error(msg)
+                self.active_workflows[workflow_id]["status"] = "timeout"
+                self.active_workflows[workflow_id]["error"] = msg
+                return {
+                    "success": False,
+                    "workflow_id": workflow_id,
+                    "error": msg,
+                    "message": "Request timed out",
+                }
 
-            return {
-                "success": False,
-                "workflow_id": workflow_id,
-                "error": str(e),
-                "message": "Request processing failed",
-            }
+            except Exception as e:
+                self.logger.error(f"Workflow {workflow_id} failed: {str(e)}")
+                self.active_workflows[workflow_id]["status"] = "failed"
+                self.active_workflows[workflow_id]["error"] = str(e)
+                return {
+                    "success": False,
+                    "workflow_id": workflow_id,
+                    "error": str(e),
+                    "message": "Request processing failed",
+                }
 
     def _create_task_from_request(
         self, request: str, context: Optional[Dict[str, Any]] = None
@@ -173,20 +230,7 @@ class Orchestrator:
         Returns:
             Task object
         """
-        # Use LLM to determine task type and parameters
-        prompt = f"""Analyze this user request and determine:
-1. What type of task is it? (file, coding, web, data, planning, etc.)
-2. What are the key parameters?
-
-Request: {request}
-
-Respond with just the task type and parameters."""
-
-        # LLM response used implicitly to warm context; result not parsed here
-        self.llm.ask(prompt)
-
-        # For now, simple heuristic-based classification
-        # In production, would parse LLM response properly
+        # Classify the request using keyword heuristics
         task_type = self._classify_request(request)
 
         task = Task(

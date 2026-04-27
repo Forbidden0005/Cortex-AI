@@ -25,9 +25,19 @@ class TaskQueue:
     Uses a set for O(1) active-task membership checks.
     """
 
-    def __init__(self, max_concurrent_tasks: int = 5, retry_delay: float = 5.0):
+    def __init__(
+        self,
+        max_concurrent_tasks: int = 5,
+        retry_delay: float = 5.0,
+        max_queue_size: int = 0,
+    ):
+        if max_queue_size < 0:
+            raise ValueError(
+                f"max_queue_size must be >= 0 (0 = unlimited), got {max_queue_size}"
+            )
         self.max_concurrent_tasks = max_concurrent_tasks
         self.retry_delay = retry_delay
+        self.max_queue_size = max_queue_size  # 0 = unlimited
         self.logger = get_logger()
 
         self._pending: List[Task] = []
@@ -39,7 +49,14 @@ class TaskQueue:
         self._retry_counts: Dict[str, int] = {}
 
     def add_task(self, task: Task) -> None:
-        """Add a task to the pending queue."""
+        """Add a task to the pending queue.
+
+        Raises RuntimeError if max_queue_size (if configured) would be exceeded.
+        """
+        if self.max_queue_size and len(self._pending) >= self.max_queue_size:
+            raise RuntimeError(
+                f"[TaskQueue] Queue full ({self.max_queue_size} tasks); cannot add {task.task_id}"
+            )
         self._pending.append(task)
         self.logger.info(
             f"[TaskQueue] Added task {task.task_id}: {task.description[:60]}"
@@ -92,11 +109,14 @@ class TaskQueue:
         retry_count = self._retry_counts.get(task.task_id, 0)
 
         if retry_count < max_retries:
-            self._retry_counts[task.task_id] = retry_count + 1
+            new_count = retry_count + 1
+            self._retry_counts[task.task_id] = new_count
+            # Use Task's built-in method to properly reset status and timestamps
+            task.increment_retry()
             self._pending.append(task)  # re-queue for retry
             self.logger.warning(
                 f"[TaskQueue] Task {task.task_id} failed (attempt "
-                f"{retry_count + 1}/{max_retries}), re-queuing. Error: {error}"
+                f"{new_count}/{max_retries}), re-queuing. Error: {error}"
             )
         else:
             self._failed.append(task)

@@ -5,6 +5,7 @@ Provides safe, logged file operations that agents can use.
 """
 
 import hashlib
+import os
 import shutil
 import sys
 from datetime import datetime
@@ -21,10 +22,37 @@ class FileTools:
     File system operation tools.
 
     All operations are logged and validated for safety.
+    An optional ``base_dir`` constructor argument constrains all path operations
+    to a safe subtree, preventing path-traversal attacks (``../../etc/passwd``).
     """
 
-    def __init__(self):
+    def __init__(self, base_dir: Optional[str] = None):
         self.logger = get_logger()
+        self.base_dir = Path(base_dir).resolve() if base_dir else None
+
+    def _safe_path(self, filepath: str) -> Path:
+        """
+        Resolve *filepath* and verify it doesn't escape ``base_dir``.
+
+        Uses a separator-aware prefix check so that a base_dir of
+        ``/safe/dir`` does not incorrectly permit ``/safe/dir-evil``.
+
+        Raises ValueError on attempted traversal.
+        """
+        resolved = Path(filepath).resolve()
+        if self.base_dir:
+            # Path.relative_to() is the correct way to check containment:
+            # it uses path-component boundaries (not raw string prefixes) and
+            # handles root directories, trailing separators, and on Windows
+            # performs a case-insensitive comparison via the OS file system.
+            try:
+                resolved.relative_to(self.base_dir)
+            except ValueError:
+                raise ValueError(
+                    f"Path traversal attempt blocked: {filepath!r} resolves to "
+                    f"{resolved}, which is outside {self.base_dir}"
+                )
+        return resolved
 
     def read_file(self, filepath: str, encoding: str = "utf-8") -> Dict[str, Any]:
         """
@@ -38,12 +66,12 @@ class FileTools:
             Dictionary with content and metadata
         """
         try:
-            path = Path(filepath)
+            path = self._safe_path(filepath)
 
             if not path.exists():
                 raise FileNotFoundError(f"File not found: {filepath}")
 
-            with open(path, "r", encoding=encoding) as f:
+            with open(path, "r", encoding=encoding, errors="replace") as f:
                 content = f.read()
 
             self.logger.info(
@@ -79,12 +107,12 @@ class FileTools:
             Dictionary with result
         """
         try:
-            path = Path(filepath)
+            path = self._safe_path(filepath)
 
             # Create parent directories if needed
             path.parent.mkdir(parents=True, exist_ok=True)
 
-            with open(path, mode, encoding=encoding) as f:
+            with open(path, mode, encoding=encoding, errors="replace") as f:
                 f.write(content)
 
             self.logger.info(
@@ -117,7 +145,7 @@ class FileTools:
             Dictionary with file list
         """
         try:
-            path = Path(directory)
+            path = self._safe_path(directory)
 
             if not path.exists():
                 raise FileNotFoundError(f"Directory not found: {directory}")
@@ -141,6 +169,17 @@ class FileTools:
             result = {"files": [], "directories": [], "total": 0}
 
             for item in files:
+                # When base_dir is set, skip symlinks that resolve outside it —
+                # rglob follows symlinks and could otherwise escape the sandbox.
+                if self.base_dir:
+                    try:
+                        item.resolve().relative_to(self.base_dir)
+                    except ValueError:
+                        self.logger.warning(
+                            f"[FileTools] Skipping {item}: resolves outside base_dir"
+                        )
+                        continue
+
                 item_info = {
                     "name": item.name,
                     "path": str(item.absolute()),
@@ -179,8 +218,8 @@ class FileTools:
             Dictionary with result
         """
         try:
-            src = Path(source)
-            dst = Path(destination)
+            src = self._safe_path(source)
+            dst = self._safe_path(destination)
 
             if not src.exists():
                 raise FileNotFoundError(f"Source not found: {source}")
@@ -222,8 +261,8 @@ class FileTools:
             Dictionary with result
         """
         try:
-            src = Path(source)
-            dst = Path(destination)
+            src = self._safe_path(source)
+            dst = self._safe_path(destination)
 
             if not src.exists():
                 raise FileNotFoundError(f"Source not found: {source}")
@@ -263,7 +302,7 @@ class FileTools:
             Dictionary with result
         """
         try:
-            path = Path(filepath)
+            path = self._safe_path(filepath)
 
             if not path.exists():
                 raise FileNotFoundError(f"File not found: {filepath}")
@@ -289,7 +328,7 @@ class FileTools:
             Dictionary with file metadata
         """
         try:
-            path = Path(filepath)
+            path = self._safe_path(filepath)
 
             if not path.exists():
                 raise FileNotFoundError(f"File not found: {filepath}")
@@ -332,7 +371,7 @@ class FileTools:
             Dictionary with result
         """
         try:
-            path = Path(directory)
+            path = self._safe_path(directory)
             path.mkdir(parents=True, exist_ok=True)
 
             self.logger.info(f"[FileTools] Created directory: {directory}")
@@ -358,7 +397,7 @@ class FileTools:
             Dictionary with search results
         """
         try:
-            path = Path(directory)
+            path = self._safe_path(directory)
 
             if not path.exists():
                 raise FileNotFoundError(f"Directory not found: {directory}")
@@ -367,6 +406,16 @@ class FileTools:
 
             # Search in text files
             for file_path in path.rglob("*"):
+                # Skip symlinks that resolve outside base_dir
+                if self.base_dir:
+                    try:
+                        file_path.resolve().relative_to(self.base_dir)
+                    except ValueError:
+                        self.logger.warning(
+                            f"[FileTools] Skipping {file_path}: resolves outside base_dir"
+                        )
+                        continue
+
                 if file_path.is_file():
                     try:
                         with open(

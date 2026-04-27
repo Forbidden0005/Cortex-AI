@@ -9,9 +9,11 @@ from pathlib import Path as PathLib
 
 sys.path.append(str(PathLib(__file__).parent.parent))
 import os
+import shlex
 import subprocess
 import tempfile
-from typing import Any, Dict, Optional
+import time
+from typing import Any, Dict, List, Optional, Union
 
 from core.logger import get_logger
 
@@ -74,11 +76,20 @@ class CodeExecutor:
                 }
 
             finally:
-                # Clean up temp file
-                try:
-                    os.unlink(temp_file)
-                except OSError:
-                    pass
+                # Retry cleanup up to 3 times — on Windows the subprocess may
+                # briefly hold the file lock after exiting.
+                for _attempt in range(3):
+                    try:
+                        os.unlink(temp_file)
+                        break
+                    except OSError:
+                        if _attempt < 2:
+                            time.sleep(0.05)
+                        else:
+                            self.logger.warning(
+                                f"[CodeExecutor] Failed to delete temp file "
+                                f"{temp_file} after 3 attempts"
+                            )
 
         except subprocess.TimeoutExpired:
             self.logger.warning(f"[CodeExecutor] Execution timed out after {timeout}s")
@@ -93,13 +104,16 @@ class CodeExecutor:
             return {"success": False, "error": str(e)}
 
     def execute_shell(
-        self, command: str, timeout: Optional[int] = None
+        self, command: Union[str, List[str]], timeout: Optional[int] = None
     ) -> Dict[str, Any]:
         """
-        Execute shell command safely.
+        Execute a shell command safely.
 
         Args:
-            command: Shell command to execute
+            command: Command to execute.  Prefer a list of strings (e.g.
+                     ["git", "status"]) to avoid shell-injection risks.
+                     A plain string is split with shlex.split() — never
+                     passed directly to the shell with shell=True.
             timeout: Execution timeout in seconds
 
         Returns:
@@ -108,13 +122,24 @@ class CodeExecutor:
         try:
             timeout = timeout or self.timeout
 
+            # Normalise to a list so we never use shell=True.
+            # Use posix=False on Windows so backslashes in paths (C:\Users\...)
+            # are treated as literals rather than escape sequences.
+            if isinstance(command, str):
+                cmd_list = shlex.split(command, posix=(sys.platform != "win32"))
+            else:
+                cmd_list = list(command)
+
             self.logger.info(
-                f"[CodeExecutor] Executing shell command: {command[:50]}..."
+                f"[CodeExecutor] Executing shell command: {cmd_list[0]!r} ..."
             )
 
-            # Execute command
+            # shell=False — no injection risk.
+            # Note: shell features (pipes, %VAR% expansion, redirection) are
+            # intentionally unavailable; callers that need them should pass a
+            # pre-split list and handle shell semantics themselves.
             result = subprocess.run(
-                command, shell=True, capture_output=True, text=True, timeout=timeout
+                cmd_list, shell=False, capture_output=True, text=True, timeout=timeout
             )
 
             self.logger.info(

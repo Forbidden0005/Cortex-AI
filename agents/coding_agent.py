@@ -1,4 +1,6 @@
+import os
 import subprocess
+import sys
 import tempfile
 
 from agents.base_agent import BaseAgent
@@ -31,7 +33,19 @@ class CodingAgent(BaseAgent):
 
             self._track_file_created(path)
 
-            result = subprocess.run(["python", path], capture_output=True, text=True)
+            try:
+                # Use sys.executable so we always use the same Python that's
+                # running this process — not whatever "python" resolves to on PATH
+                result = subprocess.run(
+                    [sys.executable, path], capture_output=True, text=True
+                )
+            finally:
+                try:
+                    os.unlink(path)
+                except OSError as cleanup_err:
+                    self.logger.warning(
+                        f"[CodingAgent] Failed to delete temp file {path}: {cleanup_err}"
+                    )
 
             return {"stdout": result.stdout, "stderr": result.stderr}
 

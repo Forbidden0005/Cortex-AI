@@ -23,13 +23,20 @@ class FileAgent(BaseAgent):
             )
         if operation == "read":
             self._track_file_read(filepath)
-            with open(filepath, "r", encoding="utf-8") as f:
-                return {"content": f.read()}
+            with open(filepath, "r", encoding="utf-8", errors="replace") as f:
+                content = f.read()
+            # Warn if replacement characters were needed (indicates non-UTF-8 source)
+            if "�" in content:
+                self.logger.warning(
+                    f"[FileAgent] Non-UTF-8 bytes replaced with � while "
+                    f"reading {filepath}"
+                )
+            return {"content": content}
 
         elif operation == "write":
             content = task.parameters.get("content", "")
             self._track_file_created(filepath)
-            with open(filepath, "w", encoding="utf-8") as f:
+            with open(filepath, "w", encoding="utf-8", errors="replace") as f:
                 f.write(content)
             return {"message": "File written", "path": filepath}
 
