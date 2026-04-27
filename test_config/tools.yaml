@@ -1,0 +1,16 @@
+tools:
+- name: file_tools
+  enabled: true
+  requires_permission: false
+- name: web_tools
+  enabled: true
+  requires_permission: false
+- name: code_executor
+  enabled: true
+  requires_permission: true
+- name: terminal
+  enabled: true
+  requires_permission: true
+- name: database_tools
+  enabled: true
+  requires_permission: false
