@@ -9,7 +9,7 @@ Supports multiple providers:
 Integrates with the config system and provides consistent interface.
 """
 
-# Import models
+import os
 import sys
 import time
 from abc import ABC, abstractmethod
@@ -19,6 +19,28 @@ from typing import Any, Dict, List, Optional
 
 sys.path.append(str(Path(__file__).parent.parent))
 from models import ModelConfig, ModelProvider
+
+
+def _set_below_normal_priority() -> None:
+    """
+    Lower the current process's CPU scheduling priority so Cortex never
+    starves other applications during inference.
+
+    Windows: sets BELOW_NORMAL_PRIORITY_CLASS via the Win32 API.
+    Linux/macOS: increments the nice value by 5 (higher = less aggressive).
+    Silent no-op if the call fails for any reason.
+    """
+    try:
+        if sys.platform == "win32":
+            import ctypes
+            # BELOW_NORMAL_PRIORITY_CLASS = 0x00004000
+            handle = ctypes.windll.kernel32.GetCurrentProcess()
+            ctypes.windll.kernel32.SetPriorityClass(handle, 0x00004000)
+        else:
+            current = os.nice(0)
+            os.nice(max(0, 5 - current))  # bump up by 5, don't exceed 19
+    except Exception:  # noqa: BLE001
+        pass
 
 
 class MessageRole(Enum):
@@ -116,8 +138,12 @@ class BaseLLM(ABC):
         return override if override is not None else self.config.max_tokens
 
 
+# Simulated inference delay for MockLLM (seconds)
+_MOCK_RESPONSE_DELAY_S = 0.1
+
+
 class MockLLM(BaseLLM):
-    """Mock LLM for testing when real models aren't available"""
+    """Mock LLM for testing when real models aren't available."""
 
     def __init__(self, config: ModelConfig):
         super().__init__(config)
@@ -133,7 +159,7 @@ class MockLLM(BaseLLM):
         """Generate mock response"""
 
         # Simulate processing time
-        time.sleep(0.1)
+        time.sleep(_MOCK_RESPONSE_DELAY_S)
 
         # Generate simple mock response
         response = self._generate_mock_response(prompt, system_prompt)
@@ -233,6 +259,11 @@ class LlamaCppLLM(BaseLLM):
     def __init__(self, config: ModelConfig):
         super().__init__(config)
 
+        # Lower this process's CPU priority so Cortex never starves other apps.
+        # On Windows: BELOW_NORMAL_PRIORITY_CLASS (0x4000).
+        # On Linux/macOS: renice to +5 (lower = less aggressive).
+        _set_below_normal_priority()
+
         try:
             from llama_cpp import Llama
 
@@ -240,7 +271,9 @@ class LlamaCppLLM(BaseLLM):
                 model_path=config.model_path,
                 n_ctx=config.context_window,
                 n_threads=config.threads,
+                n_batch=config.batch_size,   # smaller = less per-burst CPU spike
                 n_gpu_layers=config.gpu_layers if config.use_gpu else 0,
+                use_mmap=True,               # memory-mapped weights — less RAM pressure
                 verbose=False,
             )
             print(f"[LlamaCpp] Loaded model: {config.model_path}")
@@ -252,6 +285,24 @@ class LlamaCppLLM(BaseLLM):
         except Exception as e:
             raise RuntimeError(f"Failed to load model: {e}")
 
+    # Stop tokens for Mistral Instruct — end-of-sentence and role markers
+    _STOP_TOKENS = ["</s>", "[INST]", "[/INST]"]
+
+    def _build_instruct_prompt(
+        self, user_message: str, system_prompt: Optional[str] = None
+    ) -> str:
+        """
+        Format a prompt in Mistral Instruct style.
+
+        Mistral Instruct format (single turn):
+            <s>[INST] {optional_system}\\n\\n{user} [/INST]
+
+        Without the [INST] wrapper the model treats the input as raw text
+        to complete, causing it to hallucinate both sides of the conversation.
+        """
+        inner = f"{system_prompt}\n\n{user_message}" if system_prompt else user_message
+        return f"[INST] {inner} [/INST]"
+
     def generate(
         self,
         prompt: str,
@@ -259,21 +310,15 @@ class LlamaCppLLM(BaseLLM):
         temperature: Optional[float] = None,
         max_tokens: Optional[int] = None,
     ) -> LLMResponse:
-        """Generate text using llama.cpp"""
+        """Generate text using llama.cpp with Mistral Instruct formatting."""
+        full_prompt = self._build_instruct_prompt(prompt, system_prompt)
 
-        # Build full prompt
-        if system_prompt:
-            full_prompt = f"System: {system_prompt}\n\nUser: {prompt}\n\nAssistant:"
-        else:
-            full_prompt = prompt
-
-        # Generate
         response = self.llm(
             full_prompt,
             max_tokens=self._get_max_tokens(max_tokens),
             temperature=self._get_temperature(temperature),
             top_p=self.config.top_p,
-            stop=["User:", "System:"],
+            stop=self._STOP_TOKENS,
         )
 
         try:
@@ -298,28 +343,34 @@ class LlamaCppLLM(BaseLLM):
         temperature: Optional[float] = None,
         max_tokens: Optional[int] = None,
     ) -> LLMResponse:
-        """Chat using llama.cpp"""
+        """
+        Chat using llama.cpp with Mistral multi-turn format.
 
-        # Convert messages to prompt
-        prompt_parts = []
+        Mistral multi-turn format:
+            <s>[INST] turn1 [/INST] reply1</s>[INST] turn2 [/INST]
+        """
+        parts: List[str] = []
+        system_prefix = ""
+
         for msg in messages:
             if msg.role == MessageRole.SYSTEM:
-                prompt_parts.append(f"System: {msg.content}")
+                # Prepend system content to the first user turn
+                system_prefix = msg.content + "\n\n"
             elif msg.role == MessageRole.USER:
-                prompt_parts.append(f"User: {msg.content}")
+                user_text = system_prefix + msg.content
+                system_prefix = ""
+                parts.append(f"[INST] {user_text} [/INST]")
             elif msg.role == MessageRole.ASSISTANT:
-                prompt_parts.append(f"Assistant: {msg.content}")
+                parts.append(f"{msg.content}</s>")
 
-        prompt_parts.append("Assistant:")
-        full_prompt = "\n\n".join(prompt_parts)
+        full_prompt = "".join(parts)
 
-        # Generate
         response = self.llm(
             full_prompt,
             max_tokens=self._get_max_tokens(max_tokens),
             temperature=self._get_temperature(temperature),
             top_p=self.config.top_p,
-            stop=["User:", "System:"],
+            stop=self._STOP_TOKENS,
         )
 
         try:

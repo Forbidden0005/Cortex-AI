@@ -10,10 +10,11 @@ Logs are stored in /logs directory with rotation support.
 import json
 import logging
 import sys
+from contextlib import contextmanager
 from datetime import datetime
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Generator, Optional
 
 
 class AILogger:
@@ -30,7 +31,7 @@ class AILogger:
     def __init__(
         self,
         log_dir: str = "",
-        log_file: str = "ai_system.log",
+        log_file: str = "cortex.log",
         log_level: str = "INFO",
         max_file_size: int = 10485760,  # 10 MB
         backup_count: int = 5,
@@ -66,7 +67,7 @@ class AILogger:
         self.log_dir.mkdir(parents=True, exist_ok=True)
 
         # Initialize logger
-        self.logger = logging.getLogger("AISystem")
+        self.logger = logging.getLogger("Cortex")
         self.logger.setLevel(self.log_level)
 
         # Remove any existing handlers
@@ -87,12 +88,14 @@ class AILogger:
             datefmt="%Y-%m-%d %H:%M:%S",
         )
 
-        # Console handler
+        # Console handler — stored so quiet_console() can mute it
+        self._console_handler: Optional[logging.StreamHandler] = None
         if self.log_to_console:
             console_handler = logging.StreamHandler(sys.stdout)
             console_handler.setLevel(self.log_level)
             console_handler.setFormatter(formatter)
             self.logger.addHandler(console_handler)
+            self._console_handler = console_handler
 
         # File handler with rotation
         if self.log_to_file:
@@ -277,6 +280,26 @@ class AILogger:
             {"event_type": "performance", "component": component, **metrics},
         )
 
+    @contextmanager
+    def quiet_console(self) -> Generator[None, None, None]:
+        """
+        Context manager that temporarily silences the console handler.
+
+        All log records are still written to the log file — only the
+        terminal output is suppressed for the duration of the block.
+
+        Usage::
+            with logger.quiet_console():
+                result = do_something_noisy()
+        """
+        if self._console_handler is not None:
+            self._console_handler.setLevel(logging.CRITICAL + 1)
+        try:
+            yield
+        finally:
+            if self._console_handler is not None:
+                self._console_handler.setLevel(self.log_level)
+
     def get_recent_logs(self, log_type: str = "main", lines: int = 100) -> list:
         """
         Get recent log entries.
@@ -321,7 +344,7 @@ def get_logger() -> AILogger:
 
 def init_logger(
     log_dir: str = "",
-    log_file: str = "ai_system.log",
+    log_file: str = "cortex.log",
     log_level: str = "INFO",
     **kwargs,
 ) -> AILogger:

@@ -1,0 +1,16 @@
+{
+  "session_id": "246fe98f-4fae-4d05-b8d9-8875dfa09803",
+  "updated_at": "2026-04-26T06:57:58.978183",
+  "pending": 0,
+  "completed": 0,
+  "failed": 4,
+  "frozen_tasks": [
+    "7f98989b-71f0-472e-94c2-88eecd4426f6",
+    "7f98989b-71f0-472e-94c2-88eecd4426f6",
+    "7f98989b-71f0-472e-94c2-88eecd4426f6",
+    "7f98989b-71f0-472e-94c2-88eecd4426f6"
+  ],
+  "retried": 0,
+  "escalated": 0,
+  "success_rate": 0.0
+}

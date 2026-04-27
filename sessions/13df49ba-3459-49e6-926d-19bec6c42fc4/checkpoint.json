@@ -1,0 +1,11 @@
+{
+  "session_id": "13df49ba-3459-49e6-926d-19bec6c42fc4",
+  "updated_at": "2026-04-26T07:46:55.719000",
+  "pending": 0,
+  "completed": 1,
+  "failed": 0,
+  "frozen_tasks": [],
+  "retried": 0,
+  "escalated": 0,
+  "success_rate": 1.0
+}

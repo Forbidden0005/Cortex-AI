@@ -13,8 +13,9 @@ from typing import Any, Dict, List
 sys.path.append(str(Path(__file__).parent.parent))
 from agents.base_agent import BaseAgent
 from core.config_loader import get_config
-# Import LLM
+# Import LLM and shared task classifier
 from core.llm_interface import LLMInterface
+from core.task_classifier import classify_task_type
 from models import Task, TaskPriority
 
 
@@ -45,7 +46,7 @@ class PlanningAgent(BaseAgent):
             self.llm = llm_interface
         else:
             config = get_config()
-            self.llm = LLMInterface(config.model, use_mock=True)
+            self.llm = LLMInterface(config.model, use_mock=False)
 
         self._track_tool_used("llm")
 
@@ -172,85 +173,18 @@ Format your response as a numbered list of steps."""
 
     def _determine_agent_type(self, description: str) -> str:
         """
-        Determine which agent type should handle a task based on description.
+        Determine which agent type should handle a subtask.
+
+        Delegates to the shared task classifier so keyword→type
+        mappings stay in one place.
 
         Args:
-            description: Task description
+            description: Subtask description text.
 
         Returns:
-            Agent type string
+            Agent type string (e.g. "file", "coding", "web").
         """
-        description_lower = description.lower()
-
-        # Keyword mapping
-        if any(
-            word in description_lower
-            for word in ["file", "read", "write", "save", "load", "scan", "move"]
-        ):
-            return "file"
-
-        if any(
-            word in description_lower
-            for word in ["code", "script", "function", "program", "execute", "run"]
-        ):
-            return "coding"
-
-        if any(
-            word in description_lower
-            for word in ["search", "web", "internet", "lookup", "find online"]
-        ):
-            return "web"
-
-        if any(
-            word in description_lower
-            for word in ["analyze", "data", "calculate", "process", "chart"]
-        ):
-            return "data"
-
-        if any(
-            word in description_lower
-            for word in ["automate", "control", "click", "type", "gui"]
-        ):
-            return "automation"
-
-        if any(
-            word in description_lower
-            for word in ["security", "scan", "virus", "malware", "check"]
-        ):
-            return "security"
-
-        if any(
-            word in description_lower
-            for word in ["remember", "recall", "memory", "store", "retrieve"]
-        ):
-            return "memory"
-
-        if any(
-            word in description_lower
-            for word in ["image", "picture", "photo", "visual", "see"]
-        ):
-            return "vision"
-
-        if any(
-            word in description_lower
-            for word in ["audio", "sound", "voice", "speech", "listen"]
-        ):
-            return "audio"
-
-        if any(
-            word in description_lower
-            for word in ["test", "verify", "check", "qa", "quality"]
-        ):
-            return "qa"
-
-        if any(
-            word in description_lower
-            for word in ["plan", "break down", "organize", "steps"]
-        ):
-            return "planning"
-
-        # Default to file agent
-        return "file"
+        return classify_task_type(description)
 
 
 if __name__ == "__main__":

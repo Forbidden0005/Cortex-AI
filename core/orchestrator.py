@@ -14,7 +14,7 @@ import sys
 import uuid
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 # Import models
 sys.path.append(str(Path(__file__).parent.parent))
@@ -23,9 +23,26 @@ from core.config_loader import get_config
 from core.llm_interface import LLMInterface
 # Import core components
 from core.logger import get_logger
+from core.loop_controller import LoopController, LoopReport
 from core.memory_manager import MemoryManager
+from core.session_store import SessionStore
+from core.task_classifier import (
+    LONG_REQUEST_WORD_THRESHOLD,
+    SHORT_MESSAGE_WORD_THRESHOLD,
+    classify_task_type,
+)
 from core.task_queue import TaskQueue
 from models import AgentResult, MemoryItem, MemoryType, Task, TaskPriority
+
+# Maximum characters stored in memory for a single workflow result
+_MEMORY_CONTENT_MAX_CHARS = 200
+_MEMORY_SUMMARY_MAX_CHARS = 500
+
+# Minimum verb matches that suggest a task needs multi-step planning
+_MULTI_VERB_THRESHOLD = 1
+
+# Word count above which a task description is considered complex
+_COMPLEX_TASK_WORD_THRESHOLD = 15
 
 
 class Orchestrator:
@@ -47,7 +64,7 @@ class Orchestrator:
         self.config = get_config()
 
         # Initialize components
-        self.logger.info("Initializing Orchestrator...")
+        self.logger.info("Initializing Cortex...")
 
         self.memory = MemoryManager(storage_dir=self.config.memory.vector_db_path)
 
@@ -59,6 +76,8 @@ class Orchestrator:
             max_concurrent_tasks=self.config.task_queue.max_concurrent_tasks,
             retry_delay=self.config.task_queue.retry_delay,
         )
+
+        self.session_store = SessionStore()
 
         # Conversation tracking
         self.current_conversation_id = str(uuid.uuid4())
@@ -73,14 +92,22 @@ class Orchestrator:
         )
 
     def process_request(
-        self, user_request: str, context: Optional[Dict[str, Any]] = None
+        self,
+        user_request: str,
+        context: Optional[Dict[str, Any]] = None,
+        _task_type: Optional[str] = None,
+        on_status: Optional[Callable[[str], None]] = None,
     ) -> Dict[str, Any]:
         """
         Process a user request from start to finish.
 
         Args:
             user_request: Natural language request from user
-            context: Optional context information
+            context:      Optional context information
+            _task_type:   Pre-classified type (skips classification when provided,
+                          avoiding a redundant LLM call from the caller).
+            on_status:    Optional callback for live progress updates — called
+                          by LoopController before/after each task step.
 
         Returns:
             Dictionary with results and status
@@ -88,6 +115,13 @@ class Orchestrator:
         workflow_id = str(uuid.uuid4())
 
         self.logger.log_user_request(user_request)
+
+        # Fast path: conversational / general requests skip the full pipeline.
+        # Accept a pre-classified type so the caller doesn't have to classify twice.
+        task_type = _task_type if _task_type is not None else self._classify_request(user_request)
+        if task_type == "general":
+            return self._respond_directly(user_request)
+
         self.logger.info(f"[Orchestrator] Processing request (workflow: {workflow_id})")
 
         # Track workflow
@@ -101,7 +135,7 @@ class Orchestrator:
 
         try:
             # Step 1: Understand the request and create initial task
-            initial_task = self._create_task_from_request(user_request, context)
+            initial_task = self._create_task_from_request(user_request, context, task_type)
 
             # Step 2: Determine if task needs planning
             if self._needs_planning(initial_task):
@@ -117,19 +151,22 @@ class Orchestrator:
                 self.task_queue.add_task(task)
                 self.active_workflows[workflow_id]["tasks"].append(task.task_id)
 
-            # Step 4: Execute tasks from queue
-            results = self._execute_queued_tasks()
+            # Step 4: Execute tasks via production loop controller
+            controller = LoopController(session_id=workflow_id, on_status=on_status)
+            loop_report = controller.run(self.task_queue, self.agent_manager)
+            results = loop_report.results
 
             # Step 5: Combine results
             final_result = self._combine_results(results)
 
             # Step 6: Store in memory
-            self._store_workflow_memory(workflow_id, user_request, final_result)
+            self._store_workflow_memory(workflow_id, user_request, final_result, loop_report)
 
             # Step 7: Update workflow tracking
             self.active_workflows[workflow_id]["status"] = "completed"
             self.active_workflows[workflow_id]["completed_at"] = datetime.now()
             self.active_workflows[workflow_id]["results"] = results
+            self.active_workflows[workflow_id]["loop_report"] = loop_report.to_dict()
             self.completed_workflows.append(workflow_id)
 
             self.logger.log_event(
@@ -144,6 +181,10 @@ class Orchestrator:
                 "workflow_id": workflow_id,
                 "result": final_result,
                 "tasks_executed": len(results),
+                "success_rate": loop_report.success_rate,
+                "retried": loop_report.retried,
+                "escalated": loop_report.escalated,
+                "frozen": loop_report.frozen,
                 "message": "Request processed successfully",
             }
 
@@ -161,33 +202,24 @@ class Orchestrator:
             }
 
     def _create_task_from_request(
-        self, request: str, context: Optional[Dict[str, Any]] = None
+        self,
+        request: str,
+        context: Optional[Dict[str, Any]] = None,
+        task_type: Optional[str] = None,
     ) -> Task:
         """
-        Convert user request into a Task object.
+        Convert a natural-language user request into a Task object.
 
         Args:
-            request: User's natural language request
-            context: Optional context
+            request:   User's natural language request.
+            context:   Optional context dict.
+            task_type: Pre-classified type (skips classification if provided).
 
         Returns:
             Task object
         """
-        # Use LLM to determine task type and parameters
-        prompt = f"""Analyze this user request and determine:
-1. What type of task is it? (file, coding, web, data, planning, etc.)
-2. What are the key parameters?
-
-Request: {request}
-
-Respond with just the task type and parameters."""
-
-        # LLM response used implicitly to warm context; result not parsed here
-        self.llm.ask(prompt)
-
-        # For now, simple heuristic-based classification
-        # In production, would parse LLM response properly
-        task_type = self._classify_request(request)
+        if task_type is None:
+            task_type = self._classify_request(request)
 
         task = Task(
             description=request,
@@ -206,49 +238,120 @@ Respond with just the task type and parameters."""
 
         return task
 
-    def _classify_request(self, request: str) -> str:
+    def _respond_directly(self, user_request: str) -> Dict[str, Any]:
         """
-        Classify request to determine task type.
+        Fast path for conversational / general requests.
+
+        Calls the LLM directly — no task queue, no agents, no memory write,
+        no session checkpoint. Returns in the same shape as process_request
+        so callers don't need to branch.
 
         Args:
-            request: User request text
+            user_request: The user's message.
 
         Returns:
-            Task type string
+            Result dict with success=True and a "response" key.
         """
-        request_lower = request.lower()
+        _system = "You are Cortex, a helpful AI assistant. Reply naturally and concisely."
+        try:
+            response = self.llm.ask(
+                user_request, system_prompt=_system, max_tokens=300
+            ).strip()
+        except Exception as exc:  # noqa: BLE001
+            response = f"Sorry, I couldn't generate a response: {exc}"
 
-        # Check for keywords
-        if any(
-            word in request_lower
-            for word in ["plan", "organize", "break down", "steps"]
-        ):
+        return {
+            "success": True,
+            "workflow_id": None,
+            "result": {"response": response},
+            "tasks_executed": 0,
+            "message": "Direct response",
+        }
+
+    def _classify_request(self, request: str) -> str:
+        """
+        Determine the task type for a natural-language request.
+
+        Two-stage process:
+          1. Keyword classifier — fast O(n) pass; returns a specific type
+             immediately when confident keywords are found.
+          2. LLM classifier — invoked only when keywords yield no clear
+             match ("general"), so conversational phrasing and synonyms
+             are handled correctly.
+
+        Long requests that remain "general" after both passes are promoted
+        to "planning" so the PlanningAgent can break them down.
+
+        Args:
+            request: User request text.
+
+        Returns:
+            Task type string (e.g. "coding", "file", "general", "planning").
+        """
+        # Stage 1: fast keyword match
+        task_type = classify_task_type(request)
+
+        # Stage 2: short messages that didn't match any specific keyword are
+        # treated as conversational without invoking the LLM at all.
+        if task_type == "general" and len(request.split()) <= SHORT_MESSAGE_WORD_THRESHOLD:
+            return "general"
+
+        # Stage 3: LLM disambiguation only for longer ambiguous requests
+        if task_type == "general":
+            task_type = self._classify_with_llm(request)
+
+        # Promote long unclassified requests to planning
+        if task_type == "general" and len(request.split()) > LONG_REQUEST_WORD_THRESHOLD:
             return "planning"
 
-        if any(
-            word in request_lower
-            for word in ["file", "folder", "read", "write", "save"]
-        ):
-            return "file"
+        return task_type
 
-        if any(
-            word in request_lower for word in ["code", "script", "function", "program"]
-        ):
-            return "coding"
+    def _classify_with_llm(self, request: str) -> str:
+        """
+        Use the LLM to classify a request when keyword matching fails.
 
-        if any(word in request_lower for word in ["search", "find", "lookup", "web"]):
-            return "web"
+        Asks the LLM to pick the single best task type from the known list.
+        Parses the first word of the response and validates it against the
+        allowed types; falls back to "general" if the reply is unexpected.
 
-        if any(
-            word in request_lower for word in ["analyze", "data", "chart", "calculate"]
-        ):
-            return "data"
+        Args:
+            request: User request text.
 
-        # Default to planning for complex requests
-        if len(request.split()) > 10:
-            return "planning"
+        Returns:
+            Task type string from the known set, or "general".
+        """
+        _valid_types = {
+            "file", "coding", "web", "data", "planning",
+            "automation", "security", "memory", "vision",
+            "audio", "qa", "general",
+        }
 
-        return "file"  # Default fallback
+        prompt = (
+            "You are a task router. Classify the following user request into "
+            "exactly ONE of these task types:\n"
+            "file, coding, web, data, planning, automation, security, "
+            "memory, vision, audio, qa, general\n\n"
+            "Rules:\n"
+            "- Use 'general' for greetings, questions, conversation, or anything "
+            "that doesn't clearly fit another category.\n"
+            "- Reply with ONLY the single task type word, nothing else.\n\n"
+            f"Request: {request}\n\n"
+            "Task type:"
+        )
+
+        try:
+            raw = self.llm.ask(prompt, max_tokens=5).strip().lower().split()[0]
+            # Strip punctuation that the LLM might append
+            task_type = raw.rstrip(".,;:")
+            if task_type in _valid_types:
+                self.logger.debug(
+                    f"[Orchestrator] LLM classified {request!r:.40} -> {task_type}"
+                )
+                return task_type
+        except Exception as exc:  # noqa: BLE001
+            self.logger.warning(f"[Orchestrator] LLM classification failed: {exc}")
+
+        return "general"
 
     def _needs_planning(self, task: Task) -> bool:
         """
@@ -264,14 +367,14 @@ Respond with just the task type and parameters."""
         if task.task_type == "planning":
             return True
 
-        # Complex tasks (long descriptions, multiple actions)
-        if len(task.description.split()) > 15:
+        # Complex tasks (long descriptions)
+        if len(task.description.split()) > _COMPLEX_TASK_WORD_THRESHOLD:
             return True
 
-        # Tasks with multiple verbs (suggests multiple steps)
-        verbs = ["create", "analyze", "generate", "move", "copy", "send", "update"]
-        verb_count = sum(1 for verb in verbs if verb in task.description.lower())
-        if verb_count > 1:
+        # Tasks with multiple action verbs (suggests multiple steps)
+        _action_verbs = ["create", "generate", "move", "copy", "send", "update"]
+        verb_count = sum(1 for verb in _action_verbs if verb in task.description.lower())
+        if verb_count > _MULTI_VERB_THRESHOLD:
             return True
 
         return False
@@ -310,49 +413,6 @@ Respond with just the task type and parameters."""
             )
             return [task]
 
-    def _execute_queued_tasks(self) -> List[AgentResult]:
-        """
-        Execute all tasks in the queue.
-
-        Returns:
-            List of agent results
-        """
-        results = []
-
-        self.logger.info("[Orchestrator] Starting task execution")
-
-        while not self.task_queue.is_empty():
-            # Get next ready task
-            task = self.task_queue.get_next_task()
-
-            if not task:
-                # No tasks ready (dependencies not met)
-                break
-
-            self.logger.info(f"[Orchestrator] Executing: {task.description}")
-
-            # Execute with agent manager
-            result = self.agent_manager.execute_task(task)
-
-            # Update queue based on result
-            if result.is_successful():
-                self.task_queue.mark_completed(task, result.data)
-                results.append(result)
-
-                self.logger.info(
-                    f"[Orchestrator] Task completed by {result.agent_name} "
-                    f"in {result.execution_time:.3f}s"
-                )
-            else:
-                self.task_queue.mark_failed(task, result.error or "Unknown error")
-                results.append(result)
-
-                self.logger.warning(f"[Orchestrator] Task failed: {result.error}")
-
-        self.logger.info(f"[Orchestrator] Completed {len(results)} tasks")
-
-        return results
-
     def _combine_results(self, results: List[AgentResult]) -> Dict[str, Any]:
         """
         Combine multiple agent results into final output.
@@ -366,9 +426,18 @@ Respond with just the task type and parameters."""
         if not results:
             return {"message": "No results"}
 
-        # If single result, return its data
+        # If single result, return its data (or a meaningful error on failure)
         if len(results) == 1:
-            return results[0].data
+            r = results[0]
+            if not r.is_successful():
+                return {
+                    "response": (
+                        r.error
+                        or r.message
+                        or "I wasn't able to complete that task."
+                    )
+                }
+            return r.data
 
         # Multiple results - combine them
         combined = {
@@ -390,7 +459,13 @@ Respond with just the task type and parameters."""
 
         return combined
 
-    def _store_workflow_memory(self, workflow_id: str, request: str, result: Any):
+    def _store_workflow_memory(
+        self,
+        workflow_id: str,
+        request: str,
+        result: Any,
+        loop_report: Optional["LoopReport"] = None,
+    ):
         """
         Store workflow execution in memory for learning.
 
@@ -398,18 +473,27 @@ Respond with just the task type and parameters."""
             workflow_id: Workflow identifier
             request: Original user request
             result: Final result
+            loop_report: Optional LoopReport with execution stats
         """
+        metadata: Dict[str, Any] = {
+            "workflow_id": workflow_id,
+            "request": request,
+            "result_summary": str(result)[:_MEMORY_SUMMARY_MAX_CHARS],
+        }
+
+        if loop_report is not None:
+            metadata["loop_success_rate"] = loop_report.success_rate
+            metadata["loop_retried"] = loop_report.retried
+            metadata["loop_escalated"] = loop_report.escalated
+            metadata["loop_frozen"] = loop_report.frozen
+
         memory = MemoryItem(
-            content=f"User requested: {request}. System completed with result: {str(result)[:200]}",
+            content=f"User requested: {request}. System completed with result: {str(result)[:_MEMORY_CONTENT_MAX_CHARS]}",
             memory_type=MemoryType.CONVERSATION,
             related_conversation_id=self.current_conversation_id,
             tags=["workflow", "completed"],
             source="orchestrator",
-            metadata={
-                "workflow_id": workflow_id,
-                "request": request,
-                "result_summary": str(result)[:500],
-            },
+            metadata=metadata,
         )
 
         self.memory.save(memory)
@@ -456,14 +540,14 @@ if __name__ == "__main__":
     from agents.planning_agent import PlanningAgent
 
     # Create orchestrator
-    print("\n[1/3] Initializing Orchestrator...")
+    print("\n[1/3] Initializing Cortex...")
     orchestrator = Orchestrator()
 
     # Register some agents
     print("\n[2/3] Registering Agents...")
     orchestrator.agent_manager.register_agent(PlanningAgent(orchestrator.llm))
     orchestrator.agent_manager.register_agent(FileAgent())
-    print(f"✓ Registered {len(orchestrator.agent_manager.list_agents())} agents")
+    print(f"[OK] Registered {len(orchestrator.agent_manager.list_agents())} agents")
 
     # Test simple request
     print("\n[3/3] Processing Test Request...")
@@ -514,5 +598,5 @@ if __name__ == "__main__":
     print(f"  Success Rate: {queue_stats['success_rate']:.1%}")
 
     print("\n" + "=" * 60)
-    print("✅ ORCHESTRATOR TEST COMPLETE!")
+    print("[PASS] ORCHESTRATOR TEST COMPLETE!")
     print("=" * 60)

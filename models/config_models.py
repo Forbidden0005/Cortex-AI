@@ -38,15 +38,22 @@ class ModelConfig:
     model_path: Optional[str] = None
     api_key: Optional[str] = None
     temperature: float = 0.7
-    max_tokens: int = 2048
+    max_tokens: int = 512       # Default cap — callers override per-use-case
     top_p: float = 0.9
     context_window: int = 4096
 
     # Performance settings
-    use_gpu: bool = True
-    gpu_layers: int = 32
-    threads: int = 4
-    batch_size: int = 512
+    # threads:    CPU threads used per inference call. 2 is a safe default
+    #             that keeps the machine responsive. Raise to 4 if you want
+    #             faster responses and don't mind higher CPU usage.
+    # batch_size: tokens processed per CPU burst. Smaller = smoother CPU
+    #             load but slightly slower total throughput.
+    # use_gpu / gpu_layers: only set use_gpu=True if you have an NVIDIA GPU
+    #             with CUDA. Running with gpu_layers>0 on CPU is slower.
+    use_gpu: bool = False
+    gpu_layers: int = 0
+    threads: int = 2
+    batch_size: int = 128
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary"""
@@ -151,7 +158,7 @@ class LoggingConfig:
 
     log_level: LogLevel = LogLevel.INFO
     log_dir: str = "./logs"
-    log_file: str = "ai_system.log"
+    log_file: str = "cortex.log"
     max_file_size: int = 10485760  # 10 MB
     backup_count: int = 5
     log_to_console: bool = True
@@ -202,7 +209,7 @@ class SystemConfig:
     task_queue: TaskQueueConfig = field(default_factory=TaskQueueConfig)
 
     # System settings
-    system_name: str = "AI System"
+    system_name: str = "Cortex"
     version: str = "1.0.0"
     debug_mode: bool = False
 
